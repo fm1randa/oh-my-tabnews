@@ -8,6 +8,14 @@ import Reader, { ReaderHandle } from './Reader';
 
 type Stage = 'picker' | 'browsing' | 'end';
 
+interface Slide {
+  from: ContentSummary;
+  to: ContentSummary;
+  toIndex: number;
+  direction: 1 | -1; // 1 = próximo (desliza pra cima), -1 = anterior
+  started: boolean;
+}
+
 interface Props {
   initialStrategy: FeedStrategy;
   visible: boolean;
@@ -19,6 +27,7 @@ export default function ReelsMode({ initialStrategy, visible, onRequestClose }: 
   const [stage, setStage] = useState<Stage>('picker');
   const [period, setPeriod] = useState<PeriodId>('24h');
   const [index, setIndex] = useState(0);
+  const [slide, setSlide] = useState<Slide | null>(null);
   const [readerItem, setReaderItem] = useState<ContentSummary | null>(null);
   const [, setVersion] = useState(0);
 
@@ -97,13 +106,38 @@ export default function ReelsMode({ initialStrategy, visible, onRequestClose }: 
   const items = engine?.items ?? [];
   const current = items[index];
 
+  const slideTo = useCallback(
+    (toIndex: number, direction: 1 | -1) => {
+      const engine = engineRef.current;
+      const from = engine?.items[index];
+      const to = engine?.items[toIndex];
+      if (!from || !to) return;
+      // Nunca inicia um slide por cima de outro (ex.: avanço vindo do caminho assíncrono).
+      setSlide((s) => s ?? { from, to, toIndex, direction, started: false });
+    },
+    [index],
+  );
+
+  // Dispara a transição no frame seguinte à montagem dos dois cards.
+  useEffect(() => {
+    if (!slide || slide.started) return;
+    const frame = requestAnimationFrame(() => setSlide((s) => (s ? { ...s, started: true } : s)));
+    return () => cancelAnimationFrame(frame);
+  }, [slide]);
+
+  const finishSlide = useCallback(() => {
+    if (!slide) return;
+    setIndex(slide.toIndex);
+    setSlide(null);
+    void ensureAhead(slide.toIndex);
+  }, [slide, ensureAhead]);
+
   const next = useCallback(() => {
     const engine = engineRef.current;
-    if (!engine || !current) return;
+    if (!engine || !current || slide) return;
     if (index + 1 < engine.items.length) {
       markRead(current);
-      setIndex(index + 1);
-      void ensureAhead(index + 1);
+      slideTo(index + 1, 1);
       return;
     }
     if (engine.status === 'feed-end' || engine.status === 'period-end') {
@@ -117,18 +151,19 @@ export default function ReelsMode({ initialStrategy, visible, onRequestClose }: 
       if (!updated) return;
       if (index + 1 < updated.items.length) {
         markRead(current);
-        setIndex(index + 1);
+        slideTo(index + 1, 1);
       } else if (updated.status === 'feed-end' || updated.status === 'period-end') {
         markRead(current);
         setStage('end');
       }
       bump();
     });
-  }, [current, index, ensureAhead, markRead, bump]);
+  }, [current, index, slide, slideTo, ensureAhead, markRead, bump]);
 
   const prev = useCallback(() => {
-    setIndex((i) => Math.max(0, i - 1));
-  }, []);
+    if (slide || index === 0) return;
+    slideTo(index - 1, -1);
+  }, [slide, index, slideTo]);
 
   const pickPeriod = useCallback(
     (id: PeriodId) => {
@@ -199,23 +234,31 @@ export default function ReelsMode({ initialStrategy, visible, onRequestClose }: 
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [visible, readerItem, stage, next, prev, current, onRequestClose]);
 
-  // Roda do mouse na capa: um Reel por gesto, com acumulador e cooldown.
+  // Roda do mouse na capa: um gesto move exatamente um Reel. Depois de navegar,
+  // o gesto fica "travado" até terminar (pausa nos eventos de wheel) — assim a
+  // inércia do trackpad ou um scroll longo nunca pulam vários Reels.
   useEffect(() => {
     const root = rootRef.current;
     if (!root || !visible) return;
+    const GESTURE_GAP_MS = 250;
+    const THRESHOLD = 60;
     let accumulated = 0;
     let lastEventAt = 0;
-    let lastNavAt = 0;
+    let latched = false;
     const onWheel = (event: WheelEvent) => {
       if (readerItem || stage !== 'browsing') return; // na Leitura a roda rola o texto
       event.preventDefault();
       const now = Date.now();
-      if (now - lastEventAt > 250) accumulated = 0;
+      if (now - lastEventAt > GESTURE_GAP_MS) {
+        // Silêncio na roda = gesto anterior terminou; começa um gesto novo.
+        accumulated = 0;
+        latched = false;
+      }
       lastEventAt = now;
-      if (now - lastNavAt < 450) return;
+      if (latched) return;
       accumulated += event.deltaY;
-      if (Math.abs(accumulated) >= 60) {
-        lastNavAt = now;
+      if (Math.abs(accumulated) >= THRESHOLD) {
+        latched = true;
         if (accumulated > 0) next();
         else prev();
         accumulated = 0;
@@ -273,42 +316,40 @@ export default function ReelsMode({ initialStrategy, visible, onRequestClose }: 
       )}
 
       {stage === 'browsing' && current && (
-        <article className="omtn-reel" key={current.id} onClick={() => setReaderItem(current)}>
-          <div className="omtn-reel-meta-top">
-            <span className="omtn-counter">#{index + 1}</span>
-            {current.id in readMapRef.current && (
-              <button
-                className="omtn-chip"
-                title="Este Conteúdo está marcado como lido"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  markUnread(current);
-                }}
+        <div className="omtn-viewport">
+          <div
+            className="omtn-track"
+            style={
+              slide
+                ? {
+                    transform: slide.started ? `translateY(${slide.direction * -100}%)` : 'translateY(0)',
+                    transition: slide.started ? undefined : 'none',
+                  }
+                : { transform: 'translateY(0)', transition: 'none' }
+            }
+            onTransitionEnd={(event) => {
+              if (event.propertyName === 'transform' && event.target === event.currentTarget) finishSlide();
+            }}
+          >
+            {(slide ? [slide.from, slide.to] : [current]).map((item, position) => (
+              <div
+                key={item.id}
+                className="omtn-slide"
+                style={slide && position === 1 ? { top: `${slide.direction * 100}%` } : undefined}
               >
-                lido ✓ · desfazer
-              </button>
-            )}
+                <ReelCard
+                  item={item}
+                  number={(slide && position === 1 ? slide.toIndex : index) + 1}
+                  isRead={item.id in readMapRef.current}
+                  onOpen={() => setReaderItem(item)}
+                  onMarkUnread={() => markUnread(item)}
+                  onNext={next}
+                  onPrev={prev}
+                />
+              </div>
+            ))}
           </div>
-          <h1 className="omtn-title">{current.title}</h1>
-          <footer className="omtn-reel-footer">
-            <div className="omtn-byline">
-              <strong>{current.owner_username}</strong>
-              <span className="omtn-muted">
-                {current.tabcoins} tabcoins · {current.children_deep_count} comentários
-                <br />
-                {relativeTime(current.published_at)}
-              </span>
-            </div>
-            <div className="omtn-navbuttons" onClick={(event) => event.stopPropagation()}>
-              <button className="omtn-navbtn omtn-navbtn-secondary" title="Anterior (k / ↑)" onClick={prev}>
-                ↓
-              </button>
-              <button className="omtn-navbtn" title="Próximo (j / ↓)" onClick={next}>
-                ↑
-              </button>
-            </div>
-          </footer>
-        </article>
+        </div>
       )}
 
       {stage === 'browsing' && !current && engine?.status === 'loading' && (
@@ -367,6 +408,63 @@ export default function ReelsMode({ initialStrategy, visible, onRequestClose }: 
 
       {readerItem && <Reader ref={readerRef} item={readerItem} onClose={() => setReaderItem(null)} />}
     </div>
+  );
+}
+
+function ReelCard({
+  item,
+  number,
+  isRead,
+  onOpen,
+  onMarkUnread,
+  onNext,
+  onPrev,
+}: {
+  item: ContentSummary;
+  number: number;
+  isRead: boolean;
+  onOpen: () => void;
+  onMarkUnread: () => void;
+  onNext: () => void;
+  onPrev: () => void;
+}) {
+  return (
+    <article className="omtn-reel" onClick={onOpen}>
+      <div className="omtn-reel-meta-top">
+        <span className="omtn-counter">#{number}</span>
+        {isRead && (
+          <button
+            className="omtn-chip"
+            title="Este Conteúdo está marcado como lido"
+            onClick={(event) => {
+              event.stopPropagation();
+              onMarkUnread();
+            }}
+          >
+            lido ✓ · desfazer
+          </button>
+        )}
+      </div>
+      <h1 className="omtn-title">{item.title}</h1>
+      <footer className="omtn-reel-footer">
+        <div className="omtn-byline">
+          <strong>{item.owner_username}</strong>
+          <span className="omtn-muted">
+            {item.tabcoins} tabcoins · {item.children_deep_count} comentários
+            <br />
+            {relativeTime(item.published_at)}
+          </span>
+        </div>
+        <div className="omtn-navbuttons" onClick={(event) => event.stopPropagation()}>
+          <button className="omtn-navbtn omtn-navbtn-secondary" title="Anterior (k / ↑)" onClick={onPrev}>
+            ↓
+          </button>
+          <button className="omtn-navbtn" title="Próximo (j / ↓)" onClick={onNext}>
+            ↑
+          </button>
+        </div>
+      </footer>
+    </article>
   );
 }
 
