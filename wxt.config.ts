@@ -16,7 +16,12 @@ export default defineConfig({
     // Exigido pela assinatura da AMO (Firefox, incl. Android).
     ...(browser === 'firefox' && {
       browser_specific_settings: {
-        gecko: { id: 'oh-my-tabnews@fm1randa' },
+        gecko: {
+          id: 'oh-my-tabnews@fm1randa',
+          // A extensão não coleta nem transmite dado nenhum: todo estado
+          // (Lidos, toggles) vive em storage.local na máquina do usuário.
+          data_collection_permissions: { required: ['none'] },
+        },
         gecko_android: {},
       },
     }),
