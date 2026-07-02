@@ -361,6 +361,16 @@ try {
   const endNew2 = await page.locator('.omtn-center h2').textContent().catch(() => null);
   ok('Fim do Período 7d (itens de 30d NÃO vazaram)', endNew2?.includes('fim') ?? false, endNew2 ?? `counter=${await counter().catch(() => '?')}`);
 
+  // ---------- Popup do ícone = opções ----------
+  const worker = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
+  const extId = new URL(worker.url()).host;
+  const popup = await context.newPage();
+  await popup.goto(`chrome-extension://${extId}/popup.html`);
+  await popup.locator('input[type="checkbox"]').first().waitFor({ timeout: 5000 });
+  ok('Popup do ícone mostra o toggle do Modo Reels', (await popup.locator('.feature input[type="checkbox"]').count()) === 1);
+  ok('Popup do ícone mostra Limpar Lidos', (await popup.locator('button', { hasText: 'Limpar Lidos' }).count()) === 1);
+  await popup.close();
+
   // ---------- FAB ausente fora de páginas de Feed ----------
   await page.goto('https://www.tabnews.com.br/tester/post-1', { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(1200);

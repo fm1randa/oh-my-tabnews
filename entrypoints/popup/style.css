@@ -1,0 +1,9 @@
+/* Dimensões de popup de toolbar: largura fixa, conteúdo compacto. */
+body {
+  width: 360px;
+}
+
+main {
+  max-width: none;
+  padding: 16px;
+}
