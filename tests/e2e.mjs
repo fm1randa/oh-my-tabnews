@@ -194,6 +194,30 @@ try {
 
   ok('Reel revisitado mostra chip lido', (await page.locator('.omtn-chip').count()) > 0);
 
+  // ---------- Regressões visuais dos slides vizinhos ----------
+  const geometry = await page.evaluate(() => {
+    const root = document.querySelector('oh-my-tabnews-reels').shadowRoot;
+    const viewport = root.querySelector('.omtn-viewport').getBoundingClientRect();
+    const slides = [...root.querySelectorAll('.omtn-slide')].map((el) => {
+      const r = el.getBoundingClientRect();
+      return { top: r.top - viewport.top, height: r.height };
+    });
+    const bylines = [...root.querySelectorAll('.omtn-byline')].filter((el) => {
+      const r = el.getBoundingClientRect();
+      return r.top >= viewport.top - 1 && r.bottom <= viewport.bottom + 1;
+    });
+    return { viewportH: viewport.height, slides, visibleBylines: bylines.length };
+  });
+  ok(
+    'Slides vizinhos têm exatamente a altura da tela (sem vazar rodapé)',
+    geometry.slides.every((s) => Math.abs(s.height - geometry.viewportH) < 2),
+    JSON.stringify(geometry.slides),
+  );
+  ok('Só um byline visível por vez (sem metadados acumulados)', geometry.visibleBylines === 1, `${geometry.visibleBylines} visíveis`);
+  ok('Botões de navegação fora dos slides (não rolam junto)', (await page.locator('.omtn-slide .omtn-navbuttons').count()) === 0);
+  ok('Botões de navegação presentes no overlay', (await page.locator('.omtn-overlay > .omtn-navbuttons').count()) === 1);
+
+
   // ---------- Teclado ----------
   await page.keyboard.press('j');
   await page.waitForTimeout(600);

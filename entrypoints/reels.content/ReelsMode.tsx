@@ -261,11 +261,20 @@ export default function ReelsMode({ initialStrategy, visible, onRequestClose }: 
               isRead={item.id in readMapRef.current}
               onOpen={() => setReaderItem(item)}
               onMarkUnread={() => markUnread(item)}
-              onNext={next}
-              onPrev={prev}
             />
           )}
         />
+      )}
+
+      {stage === 'browsing' && current && !readerItem && (
+        <div className="omtn-navbuttons">
+          <button className="omtn-navbtn omtn-navbtn-secondary" title="Anterior (k / ↑)" onClick={prev}>
+            ↓
+          </button>
+          <button className="omtn-navbtn" title="Próximo (j / ↓)" onClick={next}>
+            ↑
+          </button>
+        </div>
       )}
 
       {stage === 'browsing' && !current && engine?.status === 'loading' && (
@@ -333,16 +342,12 @@ function ReelCard({
   isRead,
   onOpen,
   onMarkUnread,
-  onNext,
-  onPrev,
 }: {
   item: ContentSummary;
   number: number;
   isRead: boolean;
   onOpen: () => void;
   onMarkUnread: () => void;
-  onNext: () => void;
-  onPrev: () => void;
 }) {
   return (
     <article className="omtn-reel" onClick={onOpen}>
@@ -370,14 +375,6 @@ function ReelCard({
             <br />
             {relativeTime(item.published_at)}
           </span>
-        </div>
-        <div className="omtn-navbuttons" onClick={(event) => event.stopPropagation()}>
-          <button className="omtn-navbtn omtn-navbtn-secondary" title="Anterior (k / ↑)" onClick={onPrev}>
-            ↓
-          </button>
-          <button className="omtn-navbtn" title="Próximo (j / ↓)" onClick={onNext}>
-            ↑
-          </button>
         </div>
       </footer>
     </article>
