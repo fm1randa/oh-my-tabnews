@@ -1,0 +1,13 @@
+{
+  "browser": {
+    "browserName": "chromium",
+    "launchOptions": {
+      "channel": "chromium",
+      "headless": false,
+      "args": [
+        "--disable-extensions-except=/Users/filipe/Repositories/playground/oh-my-tabnews/.output/chrome-mv3",
+        "--load-extension=/Users/filipe/Repositories/playground/oh-my-tabnews/.output/chrome-mv3"
+      ]
+    }
+  }
+}
