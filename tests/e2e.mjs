@@ -26,19 +26,34 @@ async function gesture(totalDelta, steps = 10, stepGapMs = 25) {
   await page.waitForTimeout(700); // fim do gesto + settle
 }
 
-// Flick rápido estilo trackpad: fase ativa forte, depois inércia que PAUSA
-// e retoma — o padrão do macOS que enganava a trava por timing puro.
+// Flick intenso estilo trackpad do macOS: fase ativa forte, depois cauda de
+// inércia realista — deltas decaindo monotonicamente com intervalos crescendo.
 async function flickWithMomentum() {
-  for (const d of [80, 140, 180, 180]) {
+  for (const d of [80, 140, 180, 200]) {
     await page.mouse.wheel(0, d);
     await page.waitForTimeout(15);
   }
-  await page.waitForTimeout(500); // pausa traiçoeira no meio da inércia
-  for (let i = 0; i < 10; i++) {
-    await page.mouse.wheel(0, 80); // inércia retoma densa (decaindo ~flat)
-    await page.waitForTimeout(30);
+  let d = 150;
+  let gapMs = 30;
+  while (d >= 5) {
+    await page.mouse.wheel(0, d);
+    await page.waitForTimeout(gapMs);
+    d *= 0.72;
+    gapMs = Math.min(gapMs * 1.3, 200);
   }
   await page.waitForTimeout(800); // fim de verdade
+}
+
+// Flick curto e forte, com cauda de inércia breve — para testar encadeamento.
+async function quickFlick() {
+  for (const d of [60, 120, 180, 200]) {
+    await page.mouse.wheel(0, d);
+    await page.waitForTimeout(15);
+  }
+  for (const d of [150, 110, 80, 55, 35, 20, 10]) {
+    await page.mouse.wheel(0, d);
+    await page.waitForTimeout(40);
+  }
 }
 
 async function counter() {
@@ -65,8 +80,8 @@ function item(i, publishedAt, extra = {}) {
   };
 }
 
-// Relevantes: 5 itens → fim de feed rápido.
-const RELEVANT = [1, 2, 3, 4, 5].map((i) => item(i, iso(i)));
+// Relevantes: 9 itens → espaço pros testes de gesto, fim de feed alcançável.
+const RELEVANT = [1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => item(i, iso(i)));
 // Recentes: 3 nas últimas 24h, 2 na faixa 24h–7d, 2 na faixa 7d–30d.
 const NEW = [
   item(101, iso(2)),
@@ -202,13 +217,22 @@ try {
   ok('Gesto gigante contínuo avança só 1 → #3', (await counter()) === '#3', `counter=${await counter()}`);
 
   await gesture(150, 4);
+  ok('Gesto lento < 50% não avança', (await counter()) === '#3', `counter=${await counter()}`);
+
   await flickWithMomentum();
-  ok('Flick com inércia que pausa e retoma avança só 1 → #4', (await counter()) === '#4', `counter=${await counter()}`);
+  ok('Flick intenso com cauda de inércia avança só 1 → #4', (await counter()) === '#4', `counter=${await counter()}`);
 
-  await gesture(-600);
-  ok('Volta um após o flick → #3', (await counter()) === '#3', `counter=${await counter()}`);
+  await quickFlick();
+  await page.waitForTimeout(450);
+  await quickFlick();
+  await page.waitForTimeout(600);
+  ok('Segundo flick logo após o primeiro responde (um Reel cada) → #6', (await counter()) === '#6', `counter=${await counter()}`);
 
-  ok('Gesto < 50% não avança', (await counter()) === '#3', `counter=${await counter()}`);
+  for (let i = 0; i < 3; i++) {
+    await page.keyboard.press('k');
+    await page.waitForTimeout(500);
+  }
+  ok('Teclado volta três → #3', (await counter()) === '#3', `counter=${await counter()}`);
 
   await gesture(-600);
   ok('Gesto pra trás volta para #2', (await counter()) === '#2', `counter=${await counter()}`);
@@ -309,12 +333,12 @@ try {
   ok('Reabrir mantém a posição', (await counter()) === counterBefore, `esperado ${counterBefore}, veio ${await counter()}`);
 
   // ---------- Fim de feed (Relevantes tem 5) ----------
-  for (let i = 0; i < 6 && (await page.locator('.omtn-center h2').count()) === 0; i++) {
+  for (let i = 0; i < 12 && (await page.locator('.omtn-center h2').count()) === 0; i++) {
     await page.keyboard.press('j');
     await page.waitForTimeout(600);
   }
   const endTitle = await page.locator('.omtn-center h2').textContent().catch(() => null);
-  ok('Fim de feed após o último Reel', endTitle?.includes('fim') ?? false, endTitle ?? 'não chegou');
+  ok('Fim de feed após o último Reel (9 itens)', endTitle?.includes('fim') ?? false, endTitle ?? 'não chegou');
   ok('Relevantes no fim não oferece estender', (await page.locator('button', { hasText: 'Estender' }).count()) === 0);
   ok('Fim oferece Rever Lidos e Trocar', (await page.locator('.omtn-center button', { hasText: 'Rever Lidos' }).count()) === 1);
   await shot('04-end');

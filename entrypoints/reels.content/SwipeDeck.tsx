@@ -25,11 +25,16 @@ const GESTURE_END_MS = 160; // debounce para decidir após o último evento
 const COMMIT_RATIO = 0.5; // fração da tela para completar o slide
 const SETTLE_MS = 320;
 // Destravar exige um gesto novo DE VERDADE — timing sozinho não separa a
-// inércia do trackpad de um gesto novo (a inércia pode pausar e retomar forte):
-const UNLATCH_SILENCE_MS = 400; // pausa longa = mão parada
+// inércia do trackpad de um gesto novo. O envelope decadente rastreia a
+// magnitude da inércia: ela só decai, então um swipe novo "fura" o envelope
+// rápido e o app responde sem esperar a cauda do swipe anterior morrer.
+const UNLATCH_SILENCE_MS = 250; // pausa = mão parada
 const RISE_MIN = 40; // delta mínimo pra contar como borda de subida
-const RISE_FACTOR = 1.5; // inércia decai; um flick novo sobe ≥1.5× o evento anterior
-const POST_COMMIT_GRACE_MS = 450; // nada destrava logo após um commit (settle + pico da inércia)
+const RISE_FACTOR = 1.3; // sobe acima do envelope decaído = flick novo
+const ENVELOPE_TAU_MS = 120; // meia-vida do envelope da inércia
+const POST_COMMIT_GRACE_MS = 350; // nada destrava logo após um commit (settle + pico da inércia)
+const FLICK_DELTA = 110; // pico de delta que caracteriza um flick
+const FLICK_COMMIT_RATIO = 0.15; // flick comete com bem menos arrasto que o drag lento
 
 const SwipeDeck = forwardRef<SwipeDeckHandle, Props>(function SwipeDeck(
   { prevItem, item, nextItem, onCommit, onOverscrollForward, renderCard },
@@ -42,8 +47,10 @@ const SwipeDeck = forwardRef<SwipeDeckHandle, Props>(function SwipeDeck(
 
   const gesture = useRef({
     raw: 0, // deltaY acumulado do gesto atual
+    peak: 0, // maior |delta| do gesto atual (flick vs drag lento)
+    envelope: 0, // magnitude recente da inércia, decaindo no tempo
     lastAt: 0,
-    lastDelta: 0, // delta do evento anterior (para detectar borda de subida/inversão)
+    lastDelta: 0, // delta do evento anterior (para detectar inversão)
     latched: false, // já decidiu neste gesto — ignora o resto (inércia)
     latchedAt: 0,
     settling: false, // animação de acomodação em andamento
@@ -58,6 +65,7 @@ const SwipeDeck = forwardRef<SwipeDeckHandle, Props>(function SwipeDeck(
   useEffect(() => {
     const state = gesture.current;
     state.raw = 0;
+    state.peak = 0;
     state.settling = false;
     if (state.endTimer) clearTimeout(state.endTimer);
     if (state.settleTimer) clearTimeout(state.settleTimer);
@@ -95,8 +103,12 @@ const SwipeDeck = forwardRef<SwipeDeckHandle, Props>(function SwipeDeck(
       state.settling = true;
       state.latched = true;
       state.latchedAt = performance.now();
-      track.style.transition = `transform ${SETTLE_MS}ms cubic-bezier(0.25, 0.7, 0.3, 1)`;
-      track.style.transform = `translateY(${-targetPx}px)`;
+      // Semeia o envelope com a magnitude corrente: a inércia que vier
+      // decai a partir daqui; só um delta acima dele destrava.
+      state.envelope = Math.max(state.envelope, Math.abs(state.lastDelta), 60);
+      const onTransitionEnd = (event: TransitionEvent) => {
+        if (event.propertyName === 'transform' && event.target === track) finish();
+      };
       const finish = () => {
         if (state.settleTimer) clearTimeout(state.settleTimer);
         track.removeEventListener('transitionend', onTransitionEnd);
@@ -107,11 +119,16 @@ const SwipeDeck = forwardRef<SwipeDeckHandle, Props>(function SwipeDeck(
           state.raw = 0;
         }
       };
-      const onTransitionEnd = (event: TransitionEvent) => {
-        if (event.propertyName === 'transform' && event.target === track) finish();
-      };
+      // Arrasto já no alvo: nada a animar — transitionend nunca dispararia,
+      // e esperar o fallback deixaria o commit lento. Comete imediatamente.
+      if (Math.abs(displayOffset(state.raw) - targetPx) < 1) {
+        finish();
+        return;
+      }
+      track.style.transition = `transform ${SETTLE_MS}ms cubic-bezier(0.25, 0.7, 0.3, 1)`;
+      track.style.transform = `translateY(${-targetPx}px)`;
       track.addEventListener('transitionend', onTransitionEnd);
-      // Fallback: transitionend pode não disparar se o transform já era o alvo.
+      // Fallback caso transitionend não dispare (aba oculta, etc.).
       state.settleTimer = setTimeout(finish, SETTLE_MS + 80);
     };
 
@@ -120,9 +137,11 @@ const SwipeDeck = forwardRef<SwipeDeckHandle, Props>(function SwipeDeck(
       const H = height();
       const offset = displayOffset(state.raw);
       const { hasPrev, hasNext } = neighborsRef.current;
-      if (offset >= COMMIT_RATIO * H && hasNext) {
+      // Flick (pico alto) comete com pouco arrasto; drag lento exige metade da tela.
+      const ratio = state.peak >= FLICK_DELTA ? FLICK_COMMIT_RATIO : COMMIT_RATIO;
+      if (offset >= ratio * H && hasNext) {
         settleTo(H, 1);
-      } else if (offset <= -COMMIT_RATIO * H && hasPrev) {
+      } else if (offset <= -ratio * H && hasPrev) {
         settleTo(-H, -1);
       } else {
         if (state.raw > 0.2 * H && !hasNext) callbacksRef.current.onOverscrollForward();
@@ -140,22 +159,39 @@ const SwipeDeck = forwardRef<SwipeDeckHandle, Props>(function SwipeDeck(
       const prevDelta = state.lastDelta;
       state.lastDelta = delta;
 
-      if (state.settling) return;
+      // Envelope decai com o tempo desde o último evento.
+      state.envelope *= Math.exp(-gap / ENVELOPE_TAU_MS);
+
+      if (state.settling) {
+        state.envelope = Math.max(state.envelope, abs);
+        return;
+      }
 
       if (state.latched) {
-        // Só destrava um gesto novo de verdade — a inércia decai, então:
-        const risingEdge = abs >= RISE_MIN && abs > Math.abs(prevDelta) * RISE_FACTOR;
+        // Destrava só um gesto novo de verdade: delta furando o envelope da
+        // inércia, direção invertida ou pausa real — após a graça pós-commit.
+        // O |delta anterior| entra na referência para que um stream plano
+        // nunca fure o próprio envelope só porque o tempo o decaiu.
+        const reference = Math.max(state.envelope, Math.abs(prevDelta));
+        const risingEdge = abs >= RISE_MIN && abs > reference * RISE_FACTOR;
         const reversed = prevDelta !== 0 && Math.sign(delta) !== Math.sign(prevDelta) && abs >= RISE_MIN;
         const silence = gap > UNLATCH_SILENCE_MS;
         const pastGrace = now - state.latchedAt > POST_COMMIT_GRACE_MS;
-        if (!pastGrace || !(silence || risingEdge || reversed)) return;
+        if (!pastGrace || !(silence || risingEdge || reversed)) {
+          state.envelope = Math.max(state.envelope, abs);
+          return;
+        }
         state.latched = false;
         state.raw = 0;
+        state.peak = 0;
       } else if (gap > GESTURE_GAP_MS) {
         state.raw = 0; // gesto novo começa do zero
+        state.peak = 0;
       }
 
+      state.envelope = Math.max(state.envelope, abs);
       state.raw += delta;
+      state.peak = Math.max(state.peak, abs);
       apply();
 
       // Arrasto completo (1 tela): comete já, sem esperar o gesto acabar —
