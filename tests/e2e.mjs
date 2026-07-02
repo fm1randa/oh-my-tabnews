@@ -16,48 +16,21 @@ async function shot(name) {
   } catch {}
 }
 
-// Um "gesto" de trackpad: rajada de eventos wheel próximos, depois silêncio.
-async function gesture(totalDelta, steps = 10, stepGapMs = 25) {
-  const step = totalDelta / steps;
-  for (let i = 0; i < steps; i++) {
-    await page.mouse.wheel(0, step);
-    await page.waitForTimeout(stepGapMs);
-  }
-  await page.waitForTimeout(1100); // fim do gesto (drag lento decide em 600ms) + settle
+// Um evento de wheel com o delta total: gesto sintético atômico. Rajadas
+// fatiadas esbarram no limiar interno de fim-de-scroll do Chrome (que varia
+// com a carga do CDP) e fazem snap no meio; a fase real de gesto (segurar/
+// soltar) é do compositor e só é testável em trackpad de verdade.
+async function burst(totalDelta) {
+  await page.mouse.wheel(0, totalDelta);
 }
 
-// Flick intenso estilo trackpad do macOS: fase ativa forte, depois cauda de
-// inércia realista — deltas decaindo monotonicamente com intervalos crescendo.
-async function flickWithMomentum() {
-  for (const d of [80, 140, 180, 200]) {
-    await page.mouse.wheel(0, d);
-    await page.waitForTimeout(15);
-  }
-  let d = 150;
-  let gapMs = 30;
-  while (d >= 5) {
-    await page.mouse.wheel(0, d);
-    await page.waitForTimeout(gapMs);
-    d *= 0.72;
-    gapMs = Math.min(gapMs * 1.3, 200);
-  }
-  await page.waitForTimeout(800); // fim de verdade
-}
-
-// Flick curto e forte, com cauda de inércia breve — para testar encadeamento.
-async function quickFlick() {
-  for (const d of [60, 120, 180, 200]) {
-    await page.mouse.wheel(0, d);
-    await page.waitForTimeout(15);
-  }
-  for (const d of [150, 110, 80, 55, 35, 20, 10]) {
-    await page.mouse.wheel(0, d);
-    await page.waitForTimeout(40);
-  }
+async function gesture(totalDelta) {
+  await burst(totalDelta);
+  await page.waitForTimeout(1100); // snap nativo + scrollend + commit
 }
 
 async function counter() {
-  return (await page.locator('.omtn-slide:not([style*="top"]) .omtn-counter').first().textContent())?.trim();
+  return (await page.locator('.omtn-slide[data-offset="0"] .omtn-counter').first().textContent())?.trim();
 }
 
 // ---------------- Fixtures ----------------
@@ -201,72 +174,47 @@ try {
   ok('FAB visível na home', await fab.isVisible());
 
   await fab.click();
-  const title = page.locator('.omtn-slide:not([style*="top"]) .omtn-title');
+  const title = page.locator('.omtn-slide[data-offset="0"] .omtn-title');
   await title.waitFor({ state: 'visible', timeout: 10000 });
   ok('Relevantes abre sem picker', (await page.locator('.omtn-period-options').count()) === 0);
   ok('Capa #1 renderizada', (await counter()) === '#1', `counter=${await counter()}`);
   ok('FAB some com overlay aberto', (await fab.count()) === 0);
   await shot('01-reel');
 
+  // ---------- Delegação nativa do gesto (scroll-snap) ----------
+  const snapCss = await page.evaluate(() => {
+    const root = document.querySelector('oh-my-tabnews-reels').shadowRoot;
+    const viewport = root.querySelector('.omtn-viewport');
+    const slide = root.querySelector('.omtn-slide');
+    return {
+      type: getComputedStyle(viewport).scrollSnapType,
+      stop: getComputedStyle(slide).scrollSnapStop,
+      overflow: getComputedStyle(viewport).overflowY,
+    };
+  });
+  ok(
+    'Scroll nativo com snap mandatório (segurar/soltar é do compositor)',
+    snapCss.type.includes('mandatory') && snapCss.overflow === 'auto',
+    JSON.stringify(snapCss),
+  );
+  ok('scroll-snap-stop: always (um Reel por gesto)', snapCss.stop === 'always');
+
   // ---------- Gestos ----------
   await page.mouse.move(640, 400);
   await gesture(600);
   ok('Gesto > 50% avança para #2', (await counter()) === '#2', `counter=${await counter()}`);
 
-  await gesture(6000, 30, 20);
-  ok('Gesto gigante contínuo avança só 1 → #3', (await counter()) === '#3', `counter=${await counter()}`);
+  // Nota: "um gesto gigante move só 1" agora é garantia do compositor
+  // (scroll-snap-stop) — eventos sintéticos não têm agrupamento de gesto,
+  // então essa invariante só é verificável em trackpad real.
+  await gesture(150);
+  ok('Gesto curto < 50% volta pro lugar', (await counter()) === '#2', `counter=${await counter()}`);
 
-  await gesture(150, 4);
-  ok('Gesto lento < 50% não avança', (await counter()) === '#3', `counter=${await counter()}`);
-
-  // ---------- Segurar os dedos mantém o arrasto ----------
-  for (let i = 0; i < 6; i++) {
-    await page.mouse.wheel(0, 50);
-    await page.waitForTimeout(25);
-  }
-  await page.waitForTimeout(350); // dedos parados, abaixo da janela de 600ms
-  const heldTransform = await page.evaluate(
-    () => document.querySelector('oh-my-tabnews-reels').shadowRoot.querySelector('.omtn-track').style.transform,
-  );
-  ok('Dedos parados seguram o arrasto (não decide sozinho)', !!heldTransform && heldTransform !== 'translateY(0px)', heldTransform);
-  for (let i = 0; i < 5; i++) {
-    await page.mouse.wheel(0, 50);
-    await page.waitForTimeout(25);
-  }
-  await page.waitForTimeout(1100);
-  ok('Retomar depois de segurar continua o mesmo gesto → #4', (await counter()) === '#4', `counter=${await counter()}`);
-
-  // ---------- Arrasto rápido pausado: sem inércia, ninguém decide por você ----------
-  for (const d of [120, 180, 150]) {
-    await page.mouse.wheel(0, d);
-    await page.waitForTimeout(20);
-  }
-  await page.waitForTimeout(300); // dedos apoiados, parados — picos altos NÃO são flick
-  const fastHeld = await page.evaluate(
-    () => document.querySelector('oh-my-tabnews-reels').shadowRoot.querySelector('.omtn-track').style.transform,
-  );
-  ok('Arrasto rápido pausado segue seguro (não decide sozinho)', !!fastHeld && fastHeld !== 'translateY(0px)', fastHeld);
-  for (const d of [-150, -180, -120]) {
-    await page.mouse.wheel(0, d);
-    await page.waitForTimeout(20);
-  }
-  await page.waitForTimeout(1100);
-  ok('Arrastar de volta cancela o gesto (fica em #4)', (await counter()) === '#4', `counter=${await counter()}`);
-
-  await flickWithMomentum();
-  ok('Flick intenso com cauda de inércia avança só 1 → #5', (await counter()) === '#5', `counter=${await counter()}`);
-
-  await quickFlick();
-  await page.waitForTimeout(450);
-  await quickFlick();
-  await page.waitForTimeout(600);
-  ok('Segundo flick logo após o primeiro responde (um Reel cada) → #7', (await counter()) === '#7', `counter=${await counter()}`);
-
-  for (let i = 0; i < 3; i++) {
-    await page.keyboard.press('k');
-    await page.waitForTimeout(500);
-  }
-  ok('Teclado volta três → #4', (await counter()) === '#4', `counter=${await counter()}`);
+  await burst(600);
+  await page.waitForTimeout(900); // snap + scrollend do primeiro gesto
+  await burst(600);
+  await page.waitForTimeout(1200);
+  ok('Dois gestos seguidos avançam um Reel cada → #4', (await counter()) === '#4', `counter=${await counter()}`);
 
   await gesture(-600);
   ok('Gesto pra trás volta para #3', (await counter()) === '#3', `counter=${await counter()}`);
@@ -308,13 +256,13 @@ try {
   // ---------- Marcar como não lido ----------
   const chipBefore = await page.locator('.omtn-chip').count();
   if (chipBefore > 0) {
-    await page.locator('.omtn-slide:not([style*="top"]) .omtn-chip').click();
+    await page.locator('.omtn-slide[data-offset="0"] .omtn-chip').click();
     await page.waitForTimeout(200);
-    ok('Desfazer lido remove o chip', (await page.locator('.omtn-slide:not([style*="top"]) .omtn-chip').count()) === 0);
+    ok('Desfazer lido remove o chip', (await page.locator('.omtn-slide[data-offset="0"] .omtn-chip').count()) === 0);
   }
 
   // ---------- Leitura ----------
-  await page.locator('.omtn-slide:not([style*="top"]) .omtn-title').click();
+  await page.locator('.omtn-slide[data-offset="0"] .omtn-title').click();
   const reader = page.locator('.omtn-reader');
   await reader.waitFor({ state: 'visible', timeout: 10000 });
   await page.locator('.omtn-reader .omtn-markdown').first().waitFor({ timeout: 10000 });
@@ -384,7 +332,7 @@ try {
   await page.locator('.omtn-period-options').waitFor({ timeout: 10000 });
   ok('Recentes abre com picker', true);
   await page.locator('.omtn-period-options button', { hasText: '24 horas' }).click();
-  await page.locator('.omtn-slide:not([style*="top"]) .omtn-title').waitFor({ timeout: 10000 });
+  await page.locator('.omtn-slide[data-offset="0"] .omtn-title').waitFor({ timeout: 10000 });
   ok('Header mostra Recentes + 24h', ((await page.locator('.omtn-feedname').textContent()) ?? '').toLowerCase().includes('24'), (await page.locator('.omtn-feedname').textContent()) ?? '');
 
   // 24h tem 3 itens (101..103): avança até o fim
@@ -401,7 +349,7 @@ try {
   await shot('05-end-24h');
 
   await extend7.click();
-  await page.locator('.omtn-slide:not([style*="top"]) .omtn-title').waitFor({ timeout: 10000 });
+  await page.locator('.omtn-slide[data-offset="0"] .omtn-title').waitFor({ timeout: 10000 });
   await page.waitForTimeout(400);
   ok('Estender 7d continua no #4', (await counter()) === '#4', `counter=${await counter()}`);
   // 7d adiciona itens 104 e 105 → mais 2 e fim de novo

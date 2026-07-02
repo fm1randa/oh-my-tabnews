@@ -125,25 +125,24 @@ button {
 .omtn-viewport {
   flex: 1;
   position: relative;
-  overflow: hidden;
+  /* Scroll nativo com snap: o compositor conhece as fases do gesto
+     (dedos no touchpad seguram; soltar assenta) — JS não conhece. */
+  overflow-y: auto;
+  scroll-snap-type: y mandatory;
+  overscroll-behavior: none;
+  scrollbar-width: none;
 }
 
-.omtn-track {
-  position: absolute;
-  inset: 0;
-  /* transition e transform são controlados imperativamente pelo SwipeDeck */
-  will-change: transform;
+.omtn-viewport::-webkit-scrollbar {
+  display: none;
 }
 
 .omtn-slide {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  /* altura explícita: offsets de top (±100%) não podem esticar o slide,
-     senão o rodapé do Reel vizinho vaza pra dentro da tela atual */
   height: 100%;
   display: flex;
+  scroll-snap-align: start;
+  /* um gesto nunca atravessa mais de um Reel */
+  scroll-snap-stop: always;
 }
 
 .omtn-reel {
