@@ -269,10 +269,10 @@ export default function ReelsMode({ initialStrategy, visible, onRequestClose }: 
       {stage === 'browsing' && current && !readerItem && (
         <div className="omtn-navbuttons">
           <button className="omtn-navbtn omtn-navbtn-secondary" title="Anterior (k / ↑)" onClick={prev}>
-            ↓
+            ↑
           </button>
           <button className="omtn-navbtn" title="Próximo (j / ↓)" onClick={next}>
-            ↑
+            ↓
           </button>
         </div>
       )}

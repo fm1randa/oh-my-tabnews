@@ -27,3 +27,4 @@ web-ext.config.ts
 
 # Screenshots dos testes E2E
 tests/shots
+.playwright-mcp/
