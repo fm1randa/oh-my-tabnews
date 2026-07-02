@@ -26,6 +26,21 @@ async function gesture(totalDelta, steps = 10, stepGapMs = 25) {
   await page.waitForTimeout(700); // fim do gesto + settle
 }
 
+// Flick rápido estilo trackpad: fase ativa forte, depois inércia que PAUSA
+// e retoma — o padrão do macOS que enganava a trava por timing puro.
+async function flickWithMomentum() {
+  for (const d of [80, 140, 180, 180]) {
+    await page.mouse.wheel(0, d);
+    await page.waitForTimeout(15);
+  }
+  await page.waitForTimeout(500); // pausa traiçoeira no meio da inércia
+  for (let i = 0; i < 10; i++) {
+    await page.mouse.wheel(0, 80); // inércia retoma densa (decaindo ~flat)
+    await page.waitForTimeout(30);
+  }
+  await page.waitForTimeout(800); // fim de verdade
+}
+
 async function counter() {
   return (await page.locator('.omtn-slide:not([style*="top"]) .omtn-counter').first().textContent())?.trim();
 }
@@ -187,6 +202,12 @@ try {
   ok('Gesto gigante contínuo avança só 1 → #3', (await counter()) === '#3', `counter=${await counter()}`);
 
   await gesture(150, 4);
+  await flickWithMomentum();
+  ok('Flick com inércia que pausa e retoma avança só 1 → #4', (await counter()) === '#4', `counter=${await counter()}`);
+
+  await gesture(-600);
+  ok('Volta um após o flick → #3', (await counter()) === '#3', `counter=${await counter()}`);
+
   ok('Gesto < 50% não avança', (await counter()) === '#3', `counter=${await counter()}`);
 
   await gesture(-600);

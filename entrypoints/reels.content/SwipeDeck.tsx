@@ -20,10 +20,16 @@ interface Props {
   renderCard: (item: ContentSummary, offset: -1 | 0 | 1) => ReactNode;
 }
 
-const GESTURE_GAP_MS = 200; // silêncio que marca o fim de um gesto
+const GESTURE_GAP_MS = 200; // silêncio que separa gestos (fora da trava)
 const GESTURE_END_MS = 160; // debounce para decidir após o último evento
 const COMMIT_RATIO = 0.5; // fração da tela para completar o slide
 const SETTLE_MS = 320;
+// Destravar exige um gesto novo DE VERDADE — timing sozinho não separa a
+// inércia do trackpad de um gesto novo (a inércia pode pausar e retomar forte):
+const UNLATCH_SILENCE_MS = 400; // pausa longa = mão parada
+const RISE_MIN = 40; // delta mínimo pra contar como borda de subida
+const RISE_FACTOR = 1.5; // inércia decai; um flick novo sobe ≥1.5× o evento anterior
+const POST_COMMIT_GRACE_MS = 450; // nada destrava logo após um commit (settle + pico da inércia)
 
 const SwipeDeck = forwardRef<SwipeDeckHandle, Props>(function SwipeDeck(
   { prevItem, item, nextItem, onCommit, onOverscrollForward, renderCard },
@@ -37,7 +43,9 @@ const SwipeDeck = forwardRef<SwipeDeckHandle, Props>(function SwipeDeck(
   const gesture = useRef({
     raw: 0, // deltaY acumulado do gesto atual
     lastAt: 0,
+    lastDelta: 0, // delta do evento anterior (para detectar borda de subida/inversão)
     latched: false, // já decidiu neste gesto — ignora o resto (inércia)
+    latchedAt: 0,
     settling: false, // animação de acomodação em andamento
     endTimer: 0 as ReturnType<typeof setTimeout> | 0,
     settleTimer: 0 as ReturnType<typeof setTimeout> | 0,
@@ -86,6 +94,7 @@ const SwipeDeck = forwardRef<SwipeDeckHandle, Props>(function SwipeDeck(
     const settleTo = (targetPx: number, commit: 1 | -1 | 0) => {
       state.settling = true;
       state.latched = true;
+      state.latchedAt = performance.now();
       track.style.transition = `transform ${SETTLE_MS}ms cubic-bezier(0.25, 0.7, 0.3, 1)`;
       track.style.transform = `translateY(${-targetPx}px)`;
       const finish = () => {
@@ -124,18 +133,47 @@ const SwipeDeck = forwardRef<SwipeDeckHandle, Props>(function SwipeDeck(
     const onWheel = (event: WheelEvent) => {
       event.preventDefault();
       const now = performance.now();
-      const gapExceeded = now - state.lastAt > GESTURE_GAP_MS;
+      const gap = now - state.lastAt;
       state.lastAt = now;
+      const delta = event.deltaY;
+      const abs = Math.abs(delta);
+      const prevDelta = state.lastDelta;
+      state.lastDelta = delta;
+
       if (state.settling) return;
+
       if (state.latched) {
-        if (!gapExceeded) return; // ainda é o mesmo gesto (ou sua inércia)
+        // Só destrava um gesto novo de verdade — a inércia decai, então:
+        const risingEdge = abs >= RISE_MIN && abs > Math.abs(prevDelta) * RISE_FACTOR;
+        const reversed = prevDelta !== 0 && Math.sign(delta) !== Math.sign(prevDelta) && abs >= RISE_MIN;
+        const silence = gap > UNLATCH_SILENCE_MS;
+        const pastGrace = now - state.latchedAt > POST_COMMIT_GRACE_MS;
+        if (!pastGrace || !(silence || risingEdge || reversed)) return;
         state.latched = false;
         state.raw = 0;
-      } else if (gapExceeded) {
+      } else if (gap > GESTURE_GAP_MS) {
         state.raw = 0; // gesto novo começa do zero
       }
-      state.raw += event.deltaY;
+
+      state.raw += delta;
       apply();
+
+      // Arrasto completo (1 tela): comete já, sem esperar o gesto acabar —
+      // resposta imediata no flick forte; a trava absorve a inércia restante.
+      const H = height();
+      const offset = displayOffset(state.raw);
+      const { hasPrev, hasNext } = neighborsRef.current;
+      if (offset >= H && hasNext) {
+        if (state.endTimer) clearTimeout(state.endTimer);
+        settleTo(H, 1);
+        return;
+      }
+      if (offset <= -H && hasPrev) {
+        if (state.endTimer) clearTimeout(state.endTimer);
+        settleTo(-H, -1);
+        return;
+      }
+
       if (state.endTimer) clearTimeout(state.endTimer);
       state.endTimer = setTimeout(gestureEnd, GESTURE_END_MS);
     };
@@ -163,6 +201,7 @@ const SwipeDeck = forwardRef<SwipeDeckHandle, Props>(function SwipeDeck(
       if (direction === -1 && !hasPrev) return;
       state.settling = true;
       state.latched = true;
+      state.latchedAt = performance.now();
       track.style.transition = `transform ${SETTLE_MS}ms cubic-bezier(0.25, 0.7, 0.3, 1)`;
       track.style.transform = `translateY(${-direction * H}px)`;
       const finish = () => {
