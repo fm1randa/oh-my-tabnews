@@ -15,6 +15,11 @@
     "postinstall": "wxt prepare"
   },
   "dependencies": {
+    "@bytemd/plugin-breaks": "^1.22.0",
+    "@bytemd/plugin-gemoji": "^1.22.0",
+    "@bytemd/plugin-gfm": "^1.22.0",
+    "@bytemd/plugin-highlight-ssr": "^1.22.0",
+    "bytemd": "^1.22.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"
   },

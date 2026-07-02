@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import type { ContentScriptContext } from '#imports';
+import type { FeedStrategy } from '@/utils/api';
 import { TOGGLE_REELS_MESSAGE } from '@/utils/features';
+import ReelsMode from './ReelsMode';
 
 // Páginas de Feed onde o Modo Reels pode ser aberto: home/Relevantes e Recentes,
 // paginadas ou não. Páginas de usuário e de Conteúdo ficam de fora da v1.
@@ -10,9 +12,22 @@ function isFeedPage(pathname: string) {
   return FEED_PATHS.some((pattern) => pattern.test(pathname));
 }
 
+function strategyFor(pathname: string): FeedStrategy {
+  return pathname.startsWith('/recentes') ? 'new' : 'relevant';
+}
+
 export default function App({ ctx }: { ctx: ContentScriptContext }) {
   const [onFeedPage, setOnFeedPage] = useState(() => isFeedPage(location.pathname));
   const [open, setOpen] = useState(false);
+  // A sessão fica montada após a primeira abertura para manter a posição na
+  // mesma visita; trocar de Feed pela página remonta (key) e recomeça.
+  const [sessionStrategy, setSessionStrategy] = useState<FeedStrategy | null>(null);
+
+  const openReels = () => {
+    const strategy = strategyFor(location.pathname);
+    setSessionStrategy((current) => (current === strategy ? current : strategy));
+    setOpen(true);
+  };
 
   useEffect(() => {
     // O TabNews é um app Next.js: navegações não recarregam a página.
@@ -23,40 +38,31 @@ export default function App({ ctx }: { ctx: ContentScriptContext }) {
 
   useEffect(() => {
     const onMessage = (message: unknown) => {
-      if ((message as { type?: string })?.type === TOGGLE_REELS_MESSAGE) {
-        setOpen((current) => (onFeedPage ? !current : false));
+      if ((message as { type?: string })?.type !== TOGGLE_REELS_MESSAGE) return;
+      if (open) {
+        setOpen(false);
+      } else if (isFeedPage(location.pathname)) {
+        openReels();
       }
     };
     browser.runtime.onMessage.addListener(onMessage);
     return () => browser.runtime.onMessage.removeListener(onMessage);
-  }, [onFeedPage]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
   }, [open]);
-
-  if (!onFeedPage) return null;
 
   return (
     <>
-      {!open && (
-        <button className="omtn-fab" title="Abrir o Modo Reels (Alt+R)" onClick={() => setOpen(true)}>
+      {onFeedPage && !open && (
+        <button className="omtn-fab" title="Abrir o Modo Reels (Alt+R)" onClick={openReels}>
           ▶
         </button>
       )}
-      {open && (
-        <div className="omtn-overlay" role="dialog" aria-label="Modo Reels">
-          <p className="omtn-placeholder">
-            Modo Reels — em construção.
-            <br />
-            <small>Esc para fechar</small>
-          </p>
-        </div>
+      {sessionStrategy && (
+        <ReelsMode
+          key={sessionStrategy}
+          initialStrategy={sessionStrategy}
+          visible={open}
+          onRequestClose={() => setOpen(false)}
+        />
       )}
     </>
   );
