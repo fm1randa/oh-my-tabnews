@@ -44,12 +44,15 @@ const BASE = `${location.origin}/api/v1`;
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE}${path}`, init);
   if (!response.ok) {
-    let message = `Erro ${response.status}`;
+    let message =
+      response.status === 429
+        ? 'A API do TabNews limitou as requisições. Aguarde alguns segundos.'
+        : `Erro ${response.status}`;
     try {
       const body = await response.json();
       if (body?.message) message = body.message;
     } catch {
-      // corpo não-JSON; mantém a mensagem genérica
+      // corpo não-JSON (ex.: 429 da borda); mantém a mensagem padrão
     }
     throw new ApiError(response.status, message);
   }

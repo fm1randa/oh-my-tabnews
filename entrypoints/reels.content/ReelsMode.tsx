@@ -145,15 +145,15 @@ export default function ReelsMode({ initialStrategy, visible, onRequestClose }: 
       void lastPeriod.setValue(id);
       setPeriod(id);
       engine.extendPeriod(periodCutoff(id));
-      setStage('browsing');
       const nextIndex = Math.min(index + 1, engine.items.length);
+      // Permanece na tela de fim até os itens da nova janela chegarem —
+      // evita o flash do Reel antigo enquanto a rede responde.
       void ensureAhead(nextIndex).then(() => {
         const updated = engineRef.current;
         if (!updated) return;
         if (nextIndex < updated.items.length) {
           setIndex(nextIndex);
-        } else if (updated.status === 'feed-end' || updated.status === 'period-end') {
-          setStage('end');
+          setStage('browsing');
         }
         bump();
       });

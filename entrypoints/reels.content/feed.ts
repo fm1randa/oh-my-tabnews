@@ -68,12 +68,16 @@ export class FeedEngine {
     await this.ensure(count);
   }
 
-  /** Estende o Período: reaproveita o overflow e reabre a paginação. */
+  /** Estende o Período: reaproveita o overflow que entrou na nova janela e reabre a paginação. */
   extendPeriod(newCutoffISO: string) {
     this.options.cutoffISO = newCutoffISO;
     const rescued = this.overflow;
     this.overflow = [];
-    for (const item of rescued) this.accept(item);
+    for (const item of rescued) {
+      // O que continua além do novo corte volta pro overflow (ex.: 24h → 7d não resgata itens de 30d).
+      if (item.published_at < newCutoffISO) this.overflow.push(item);
+      else this.accept(item);
+    }
     if (this.status === 'period-end') this.status = 'idle';
   }
 

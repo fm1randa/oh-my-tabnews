@@ -3,8 +3,14 @@
   --omtn-muted: #656d76;
   --omtn-border: #d0d7de;
   --omtn-accent: #24292f;
+  /* !important: o reset do WXT (:host { all: initial !important }) vence
+     declarações normais; custom properties passam porque `all` não as cobre. */
   font-family:
-    -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif !important;
+}
+
+button {
+  font-family: inherit;
 }
 
 /* ---------- FAB ---------- */
