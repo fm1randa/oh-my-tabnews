@@ -20,13 +20,12 @@ interface Props {
   renderCard: (item: ContentSummary, offset: -1 | 0 | 1) => ReactNode;
 }
 
-// O browser não expõe "dedos no touchpad": parar de mover e levantar os dedos
-// são o mesmo silêncio. Aproximação: drag lento ganha uma janela de espera
-// longa (segurar os dedos segura o card; retomar continua o MESMO gesto),
-// enquanto flick decide rápido — dedos levantados num flick geram inércia,
-// que a trava absorve.
-const FLICK_END_MS = 160; // decisão rápida após flick (pico alto)
-const HOLD_END_MS = 600; // drag lento: espera longa = "segurando os dedos"
+// O browser não expõe "dedos no touchpad". O único sinal confiável de que os
+// dedos LEVANTARAM é a inércia: só existe depois do lift, e tem assinatura
+// inconfundível (deltas decaindo exponencialmente, contínuos). Enquanto ela
+// não aparece — e não há silêncio longo — o gesto pertence ao usuário: o card
+// só segue o dedo e NUNCA decide sozinho, nem no arrasto completo.
+const HOLD_END_MS = 600; // silêncio total = dedos pararam (ou levantaram sem inércia)
 const GESTURE_GAP_MS = 600; // silêncio que separa gestos (fora da trava)
 const COMMIT_RATIO = 0.5; // fração da tela para completar o slide
 const SETTLE_MS = 320;
@@ -41,6 +40,11 @@ const ENVELOPE_TAU_MS = 120; // meia-vida do envelope da inércia
 const POST_COMMIT_GRACE_MS = 350; // nada destrava logo após um commit (settle + pico da inércia)
 const FLICK_DELTA = 110; // pico de delta que caracteriza um flick
 const FLICK_COMMIT_RATIO = 0.15; // flick comete com bem menos arrasto que o drag lento
+// Assinatura da inércia (dedos levantaram): eventos consecutivos decaindo.
+const INERTIA_RUN = 6; // eventos consecutivos em queda para confirmar
+const INERTIA_JITTER = 1.05; // tolerância de flutuação entre eventos
+const INERTIA_DECLINE = 0.7; // queda líquida mínima desde o início da sequência
+const INERTIA_FLOOR = 6; // deltas minúsculos não contam
 
 const SwipeDeck = forwardRef<SwipeDeckHandle, Props>(function SwipeDeck(
   { prevItem, item, nextItem, onCommit, onOverscrollForward, renderCard },
@@ -57,6 +61,8 @@ const SwipeDeck = forwardRef<SwipeDeckHandle, Props>(function SwipeDeck(
     envelope: 0, // magnitude recente da inércia, decaindo no tempo
     lastAt: 0,
     lastDelta: 0, // delta do evento anterior (para detectar inversão)
+    runLen: 0, // eventos consecutivos em decaimento (assinatura de inércia)
+    runStartAbs: 0, // magnitude no início da sequência de decaimento
     latched: false, // já decidiu neste gesto — ignora o resto (inércia)
     latchedAt: 0,
     settling: false, // animação de acomodação em andamento
@@ -72,6 +78,7 @@ const SwipeDeck = forwardRef<SwipeDeckHandle, Props>(function SwipeDeck(
     const state = gesture.current;
     state.raw = 0;
     state.peak = 0;
+    state.runLen = 0;
     state.settling = false;
     if (state.endTimer) clearTimeout(state.endTimer);
     if (state.settleTimer) clearTimeout(state.settleTimer);
@@ -190,9 +197,11 @@ const SwipeDeck = forwardRef<SwipeDeckHandle, Props>(function SwipeDeck(
         state.latched = false;
         state.raw = 0;
         state.peak = 0;
+        state.runLen = 0;
       } else if (gap > GESTURE_GAP_MS) {
         state.raw = 0; // gesto novo começa do zero
         state.peak = 0;
+        state.runLen = 0;
       }
 
       state.envelope = Math.max(state.envelope, abs);
@@ -200,26 +209,28 @@ const SwipeDeck = forwardRef<SwipeDeckHandle, Props>(function SwipeDeck(
       state.peak = Math.max(state.peak, abs);
       apply();
 
-      // Arrasto completo (1 tela): comete já, sem esperar o gesto acabar —
-      // resposta imediata no flick forte; a trava absorve a inércia restante.
-      const H = height();
-      const offset = displayOffset(state.raw);
-      const { hasPrev, hasNext } = neighborsRef.current;
-      if (offset >= H && hasNext) {
-        if (state.endTimer) clearTimeout(state.endTimer);
-        settleTo(H, 1);
-        return;
+      // Assinatura de inércia: sequência contínua de deltas decaindo com queda
+      // líquida — só acontece depois que os dedos levantam. É o único momento
+      // em que decidimos com eventos ainda chegando.
+      if (abs >= INERTIA_FLOOR && Math.abs(prevDelta) >= INERTIA_FLOOR && abs <= Math.abs(prevDelta) * INERTIA_JITTER) {
+        if (state.runLen === 0) state.runStartAbs = Math.abs(prevDelta);
+        state.runLen += 1;
+      } else {
+        state.runLen = 0;
       }
-      if (offset <= -H && hasPrev) {
-        if (state.endTimer) clearTimeout(state.endTimer);
-        settleTo(-H, -1);
-        return;
-      }
+      const inertiaConfirmed =
+        state.runLen >= INERTIA_RUN &&
+        abs <= state.runStartAbs * INERTIA_DECLINE &&
+        state.peak >= FLICK_DELTA;
 
       if (state.endTimer) clearTimeout(state.endTimer);
-      // Flick decide rápido; drag lento espera — dedos parados seguram o card,
-      // e movimento retomado dentro da janela continua o mesmo gesto.
-      state.endTimer = setTimeout(gestureEnd, state.peak >= FLICK_DELTA ? FLICK_END_MS : HOLD_END_MS);
+      if (inertiaConfirmed) {
+        gestureEnd(); // dedos levantaram: decide já; a trava absorve o resto
+        return;
+      }
+      // Sem inércia detectada, o gesto é do usuário: só o silêncio decide.
+      // Dedos parados seguram o card; retomar continua o mesmo acumulado.
+      state.endTimer = setTimeout(gestureEnd, HOLD_END_MS);
     };
 
     viewport.addEventListener('wheel', onWheel, { passive: false });

@@ -236,6 +236,23 @@ try {
   await page.waitForTimeout(1100);
   ok('Retomar depois de segurar continua o mesmo gesto → #4', (await counter()) === '#4', `counter=${await counter()}`);
 
+  // ---------- Arrasto rápido pausado: sem inércia, ninguém decide por você ----------
+  for (const d of [120, 180, 150]) {
+    await page.mouse.wheel(0, d);
+    await page.waitForTimeout(20);
+  }
+  await page.waitForTimeout(300); // dedos apoiados, parados — picos altos NÃO são flick
+  const fastHeld = await page.evaluate(
+    () => document.querySelector('oh-my-tabnews-reels').shadowRoot.querySelector('.omtn-track').style.transform,
+  );
+  ok('Arrasto rápido pausado segue seguro (não decide sozinho)', !!fastHeld && fastHeld !== 'translateY(0px)', fastHeld);
+  for (const d of [-150, -180, -120]) {
+    await page.mouse.wheel(0, d);
+    await page.waitForTimeout(20);
+  }
+  await page.waitForTimeout(1100);
+  ok('Arrastar de volta cancela o gesto (fica em #4)', (await counter()) === '#4', `counter=${await counter()}`);
+
   await flickWithMomentum();
   ok('Flick intenso com cauda de inércia avança só 1 → #5', (await counter()) === '#5', `counter=${await counter()}`);
 
