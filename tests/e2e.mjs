@@ -23,7 +23,7 @@ async function gesture(totalDelta, steps = 10, stepGapMs = 25) {
     await page.mouse.wheel(0, step);
     await page.waitForTimeout(stepGapMs);
   }
-  await page.waitForTimeout(700); // fim do gesto + settle
+  await page.waitForTimeout(1100); // fim do gesto (drag lento decide em 600ms) + settle
 }
 
 // Flick intenso estilo trackpad do macOS: fase ativa forte, depois cauda de
@@ -219,23 +219,40 @@ try {
   await gesture(150, 4);
   ok('Gesto lento < 50% não avança', (await counter()) === '#3', `counter=${await counter()}`);
 
+  // ---------- Segurar os dedos mantém o arrasto ----------
+  for (let i = 0; i < 6; i++) {
+    await page.mouse.wheel(0, 50);
+    await page.waitForTimeout(25);
+  }
+  await page.waitForTimeout(350); // dedos parados, abaixo da janela de 600ms
+  const heldTransform = await page.evaluate(
+    () => document.querySelector('oh-my-tabnews-reels').shadowRoot.querySelector('.omtn-track').style.transform,
+  );
+  ok('Dedos parados seguram o arrasto (não decide sozinho)', !!heldTransform && heldTransform !== 'translateY(0px)', heldTransform);
+  for (let i = 0; i < 5; i++) {
+    await page.mouse.wheel(0, 50);
+    await page.waitForTimeout(25);
+  }
+  await page.waitForTimeout(1100);
+  ok('Retomar depois de segurar continua o mesmo gesto → #4', (await counter()) === '#4', `counter=${await counter()}`);
+
   await flickWithMomentum();
-  ok('Flick intenso com cauda de inércia avança só 1 → #4', (await counter()) === '#4', `counter=${await counter()}`);
+  ok('Flick intenso com cauda de inércia avança só 1 → #5', (await counter()) === '#5', `counter=${await counter()}`);
 
   await quickFlick();
   await page.waitForTimeout(450);
   await quickFlick();
   await page.waitForTimeout(600);
-  ok('Segundo flick logo após o primeiro responde (um Reel cada) → #6', (await counter()) === '#6', `counter=${await counter()}`);
+  ok('Segundo flick logo após o primeiro responde (um Reel cada) → #7', (await counter()) === '#7', `counter=${await counter()}`);
 
   for (let i = 0; i < 3; i++) {
     await page.keyboard.press('k');
     await page.waitForTimeout(500);
   }
-  ok('Teclado volta três → #3', (await counter()) === '#3', `counter=${await counter()}`);
+  ok('Teclado volta três → #4', (await counter()) === '#4', `counter=${await counter()}`);
 
   await gesture(-600);
-  ok('Gesto pra trás volta para #2', (await counter()) === '#2', `counter=${await counter()}`);
+  ok('Gesto pra trás volta para #3', (await counter()) === '#3', `counter=${await counter()}`);
 
   ok('Reel revisitado mostra chip lido', (await page.locator('.omtn-chip').count()) > 0);
 
@@ -266,10 +283,10 @@ try {
   // ---------- Teclado ----------
   await page.keyboard.press('j');
   await page.waitForTimeout(600);
-  ok('Tecla j avança', (await counter()) === '#3', `counter=${await counter()}`);
+  ok('Tecla j avança', (await counter()) === '#4', `counter=${await counter()}`);
   await page.keyboard.press('k');
   await page.waitForTimeout(600);
-  ok('Tecla k volta', (await counter()) === '#2', `counter=${await counter()}`);
+  ok('Tecla k volta', (await counter()) === '#3', `counter=${await counter()}`);
 
   // ---------- Marcar como não lido ----------
   const chipBefore = await page.locator('.omtn-chip').count();

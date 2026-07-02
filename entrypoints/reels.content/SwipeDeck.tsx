@@ -20,8 +20,14 @@ interface Props {
   renderCard: (item: ContentSummary, offset: -1 | 0 | 1) => ReactNode;
 }
 
-const GESTURE_GAP_MS = 200; // silêncio que separa gestos (fora da trava)
-const GESTURE_END_MS = 160; // debounce para decidir após o último evento
+// O browser não expõe "dedos no touchpad": parar de mover e levantar os dedos
+// são o mesmo silêncio. Aproximação: drag lento ganha uma janela de espera
+// longa (segurar os dedos segura o card; retomar continua o MESMO gesto),
+// enquanto flick decide rápido — dedos levantados num flick geram inércia,
+// que a trava absorve.
+const FLICK_END_MS = 160; // decisão rápida após flick (pico alto)
+const HOLD_END_MS = 600; // drag lento: espera longa = "segurando os dedos"
+const GESTURE_GAP_MS = 600; // silêncio que separa gestos (fora da trava)
 const COMMIT_RATIO = 0.5; // fração da tela para completar o slide
 const SETTLE_MS = 320;
 // Destravar exige um gesto novo DE VERDADE — timing sozinho não separa a
@@ -211,7 +217,9 @@ const SwipeDeck = forwardRef<SwipeDeckHandle, Props>(function SwipeDeck(
       }
 
       if (state.endTimer) clearTimeout(state.endTimer);
-      state.endTimer = setTimeout(gestureEnd, GESTURE_END_MS);
+      // Flick decide rápido; drag lento espera — dedos parados seguram o card,
+      // e movimento retomado dentro da janela continua o mesmo gesto.
+      state.endTimer = setTimeout(gestureEnd, state.peak >= FLICK_DELTA ? FLICK_END_MS : HOLD_END_MS);
     };
 
     viewport.addEventListener('wheel', onWheel, { passive: false });
