@@ -5,16 +5,9 @@ import { relativeTime } from '@/utils/format';
 import { PERIODS, PeriodId, lastPeriod, periodCutoff, readContents } from '@/utils/reels';
 import { FeedEngine } from './feed';
 import Reader, { ReaderHandle } from './Reader';
+import SwipeDeck, { SwipeDeckHandle } from './SwipeDeck';
 
 type Stage = 'picker' | 'browsing' | 'end';
-
-interface Slide {
-  from: ContentSummary;
-  to: ContentSummary;
-  toIndex: number;
-  direction: 1 | -1; // 1 = próximo (desliza pra cima), -1 = anterior
-  started: boolean;
-}
 
 interface Props {
   initialStrategy: FeedStrategy;
@@ -27,13 +20,13 @@ export default function ReelsMode({ initialStrategy, visible, onRequestClose }: 
   const [stage, setStage] = useState<Stage>('picker');
   const [period, setPeriod] = useState<PeriodId>('24h');
   const [index, setIndex] = useState(0);
-  const [slide, setSlide] = useState<Slide | null>(null);
   const [readerItem, setReaderItem] = useState<ContentSummary | null>(null);
   const [, setVersion] = useState(0);
 
   const engineRef = useRef<FeedEngine | null>(null);
   const readMapRef = useRef<Record<string, string>>({});
   const readerRef = useRef<ReaderHandle>(null);
+  const deckRef = useRef<SwipeDeckHandle>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
   const bump = useCallback(() => setVersion((v) => v + 1), []);
@@ -106,64 +99,36 @@ export default function ReelsMode({ initialStrategy, visible, onRequestClose }: 
   const items = engine?.items ?? [];
   const current = items[index];
 
-  const slideTo = useCallback(
-    (toIndex: number, direction: 1 | -1) => {
-      const engine = engineRef.current;
-      const from = engine?.items[index];
-      const to = engine?.items[toIndex];
-      if (!from || !to) return;
-      // Nunca inicia um slide por cima de outro (ex.: avanço vindo do caminho assíncrono).
-      setSlide((s) => s ?? { from, to, toIndex, direction, started: false });
+  // O SwipeDeck completou um slide: o índice anda e o Lido é marcado (ADR 0002).
+  const commitSwipe = useCallback(
+    (direction: 1 | -1) => {
+      if (!current) return;
+      if (direction === 1) {
+        markRead(current);
+        setIndex(index + 1);
+        void ensureAhead(index + 1);
+      } else {
+        setIndex(Math.max(0, index - 1));
+      }
     },
-    [index],
+    [current, index, markRead, ensureAhead],
   );
 
-  // Dispara a transição no frame seguinte à montagem dos dois cards.
-  useEffect(() => {
-    if (!slide || slide.started) return;
-    const frame = requestAnimationFrame(() => setSlide((s) => (s ? { ...s, started: true } : s)));
-    return () => cancelAnimationFrame(frame);
-  }, [slide]);
-
-  const finishSlide = useCallback(() => {
-    if (!slide) return;
-    setIndex(slide.toIndex);
-    setSlide(null);
-    void ensureAhead(slide.toIndex);
-  }, [slide, ensureAhead]);
-
-  const next = useCallback(() => {
+  // Arrasto pra frente sem próximo Reel: fim de verdade → tela de fim;
+  // senão força uma rajada pra tentar materializar o próximo.
+  const overscrollForward = useCallback(() => {
     const engine = engineRef.current;
-    if (!engine || !current || slide) return;
-    if (index + 1 < engine.items.length) {
-      markRead(current);
-      slideTo(index + 1, 1);
-      return;
-    }
+    if (!engine || !current) return;
     if (engine.status === 'feed-end' || engine.status === 'period-end') {
       markRead(current);
       setStage('end');
-      return;
+    } else if (engine.status !== 'stalled') {
+      void ensureAhead(index + 1);
     }
-    // Ainda pode haver mais: força uma rajada e avança se ela render algo.
-    void ensureAhead(index + 1).then(() => {
-      const updated = engineRef.current;
-      if (!updated) return;
-      if (index + 1 < updated.items.length) {
-        markRead(current);
-        slideTo(index + 1, 1);
-      } else if (updated.status === 'feed-end' || updated.status === 'period-end') {
-        markRead(current);
-        setStage('end');
-      }
-      bump();
-    });
-  }, [current, index, slide, slideTo, ensureAhead, markRead, bump]);
+  }, [current, index, markRead, ensureAhead]);
 
-  const prev = useCallback(() => {
-    if (slide || index === 0) return;
-    slideTo(index - 1, -1);
-  }, [slide, index, slideTo]);
+  const next = useCallback(() => deckRef.current?.swipe(1), []);
+  const prev = useCallback(() => deckRef.current?.swipe(-1), []);
 
   const pickPeriod = useCallback(
     (id: PeriodId) => {
@@ -234,40 +199,6 @@ export default function ReelsMode({ initialStrategy, visible, onRequestClose }: 
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [visible, readerItem, stage, next, prev, current, onRequestClose]);
 
-  // Roda do mouse na capa: um gesto move exatamente um Reel. Depois de navegar,
-  // o gesto fica "travado" até terminar (pausa nos eventos de wheel) — assim a
-  // inércia do trackpad ou um scroll longo nunca pulam vários Reels.
-  useEffect(() => {
-    const root = rootRef.current;
-    if (!root || !visible) return;
-    const GESTURE_GAP_MS = 250;
-    const THRESHOLD = 60;
-    let accumulated = 0;
-    let lastEventAt = 0;
-    let latched = false;
-    const onWheel = (event: WheelEvent) => {
-      if (readerItem || stage !== 'browsing') return; // na Leitura a roda rola o texto
-      event.preventDefault();
-      const now = Date.now();
-      if (now - lastEventAt > GESTURE_GAP_MS) {
-        // Silêncio na roda = gesto anterior terminou; começa um gesto novo.
-        accumulated = 0;
-        latched = false;
-      }
-      lastEventAt = now;
-      if (latched) return;
-      accumulated += event.deltaY;
-      if (Math.abs(accumulated) >= THRESHOLD) {
-        latched = true;
-        if (accumulated > 0) next();
-        else prev();
-        accumulated = 0;
-      }
-    };
-    root.addEventListener('wheel', onWheel, { passive: false });
-    return () => root.removeEventListener('wheel', onWheel);
-  }, [visible, readerItem, stage, next, prev]);
-
   // Trava o scroll da página enquanto o overlay está aberto.
   useEffect(() => {
     if (!visible) return;
@@ -316,40 +247,25 @@ export default function ReelsMode({ initialStrategy, visible, onRequestClose }: 
       )}
 
       {stage === 'browsing' && current && (
-        <div className="omtn-viewport">
-          <div
-            className="omtn-track"
-            style={
-              slide
-                ? {
-                    transform: slide.started ? `translateY(${slide.direction * -100}%)` : 'translateY(0)',
-                    transition: slide.started ? undefined : 'none',
-                  }
-                : { transform: 'translateY(0)', transition: 'none' }
-            }
-            onTransitionEnd={(event) => {
-              if (event.propertyName === 'transform' && event.target === event.currentTarget) finishSlide();
-            }}
-          >
-            {(slide ? [slide.from, slide.to] : [current]).map((item, position) => (
-              <div
-                key={item.id}
-                className="omtn-slide"
-                style={slide && position === 1 ? { top: `${slide.direction * 100}%` } : undefined}
-              >
-                <ReelCard
-                  item={item}
-                  number={(slide && position === 1 ? slide.toIndex : index) + 1}
-                  isRead={item.id in readMapRef.current}
-                  onOpen={() => setReaderItem(item)}
-                  onMarkUnread={() => markUnread(item)}
-                  onNext={next}
-                  onPrev={prev}
-                />
-              </div>
-            ))}
-          </div>
-        </div>
+        <SwipeDeck
+          ref={deckRef}
+          prevItem={items[index - 1] ?? null}
+          item={current}
+          nextItem={items[index + 1] ?? null}
+          onCommit={commitSwipe}
+          onOverscrollForward={overscrollForward}
+          renderCard={(item, offset) => (
+            <ReelCard
+              item={item}
+              number={index + 1 + offset}
+              isRead={item.id in readMapRef.current}
+              onOpen={() => setReaderItem(item)}
+              onMarkUnread={() => markUnread(item)}
+              onNext={next}
+              onPrev={prev}
+            />
+          )}
+        />
       )}
 
       {stage === 'browsing' && !current && engine?.status === 'loading' && (
