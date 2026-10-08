@@ -1,6 +1,6 @@
 # Oh My TabNews
 
-Extensão de navegador com funcionalidades complementares para power users do [TabNews](https://www.tabnews.com.br). O vocabulário do projeto está em [CONTEXT.md](./CONTEXT.md) e as decisões de arquitetura em [docs/adr/](./docs/adr/).
+Extensão de navegador com funcionalidades complementares para power users do [TabNews](https://www.tabnews.com.br). O vocabulário do projeto está em [GLOSSARY.md](./GLOSSARY.md) e as decisões de arquitetura em [docs/adr/](./docs/adr/).
 
 ## Features
 
